@@ -57,9 +57,13 @@
   .group { margin-top: 12px; }
   .group:first-of-type { margin-top: 0; }
   .group h3 { margin: 0 0 4px; font-size: 15px; padding: 4px 8px; border-radius: 4px; background: #EEF2FF; }
-  .group ul { margin: 0; padding-left: 24px; }
-  .group li { padding: 3px 0; }
-  .group .none { color: var(--sub); list-style: none; margin-left: -24px; padding-left: 8px; }
+  .group ul { margin: 0; padding-left: 0; list-style: none; }
+  .group li { display: flex; align-items: center; gap: 8px; padding: 4px 8px; }
+  .group .none { color: var(--sub); }
+  .avatar { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; flex-shrink: 0; background: #D1D5DB; }
+  .me-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .me-row .avatar { width: 40px; height: 40px; }
+  .me-row .me { margin-bottom: 0; }
   .you { font-size: 12px; color: var(--navy); margin-left: 4px; }
   .message { text-align: center; color: var(--sub); padding: 32px 16px; }
   .error { color: var(--absent); }
@@ -91,7 +95,10 @@
   <div id="content" class="hidden">
     <section class="card">
       <h2>あなたの回答</h2>
-      <div class="me" id="meText"></div>
+      <div class="me-row">
+        <img class="avatar" id="meAvatar" alt="">
+        <div class="me" id="meText"></div>
+      </div>
       <div class="buttons">
         <button data-answer="attend">出席</button>
         <button data-answer="absent">欠席</button>
@@ -181,6 +188,7 @@
   /** 自分の回答とみんなの回答を表示する */
   function render(data) {
     myAnswer = data.me.answer;
+    setAvatar($('meAvatar'), data.me.picture);
     $('meText').textContent = myAnswer
       ? data.me.name + ' さんは「' + LABELS[myAnswer] + '」で回答済みです'
       : data.me.name + ' さん、出欠を選んでください';
@@ -208,7 +216,13 @@
       }
       people.forEach((p) => {
         const li = document.createElement('li');
-        li.textContent = p.name;
+        const img = document.createElement('img');
+        img.className = 'avatar';
+        img.alt = '';
+        setAvatar(img, p.picture);
+        const name = document.createElement('span');
+        name.textContent = p.name;
+        li.append(img, name);
         if (p.isMe) {
           const you = document.createElement('span');
           you.className = 'you';
@@ -223,6 +237,16 @@
 
     $('status').classList.add('hidden');
     $('content').classList.remove('hidden');
+  }
+
+  /**
+   * アイコン画像を設定する。LINE のプロフィール画像は URL の末尾に /small を付けると小さい画像になる。
+   * 画像がない・読み込めないときは灰色の丸のままにする
+   */
+  function setAvatar(img, picture) {
+    img.onerror = () => { img.removeAttribute('src'); };
+    if (picture) img.src = picture + '/small';
+    else img.removeAttribute('src');
   }
 
   buttons.forEach((btn) => {
