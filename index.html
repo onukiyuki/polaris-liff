@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>出欠回答</title>
+<!--
+  ポラリスの出欠回答画面（LIFF）。
+  予定通知の「出欠を回答・確認する」リンクから、LINE の中で開く。
+  URL の例: https://liff.line.me/<LIFF ID>?event=20261108-practice&title=練習試合&date=11/8（日）9:00〜12:00&place=〇〇グラウンド
+  回答の記録と一覧は、Google Apps Script（gas/webhook.gs）に問い合わせる。
+-->
+<style>
+  :root {
+    --navy: #1E3A8A;
+    --attend: #16A34A;
+    --absent: #DC2626;
+    --undecided: #6B7280;
+    --bg: #F3F4F6;
+    --text: #111827;
+    --sub: #6B7280;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+  }
+  header { background: var(--navy); color: #fff; padding: 16px; }
+  header .label { font-size: 12px; opacity: .8; }
+  header h1 { margin: 4px 0 8px; font-size: 22px; }
+  header .row { font-size: 14px; margin-top: 2px; }
+  header .row span { display: inline-block; width: 3em; opacity: .8; }
+  main { padding: 16px; }
+  .card { background: #fff; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  .card h2 { margin: 0 0 12px; font-size: 16px; }
+  .me { font-size: 13px; color: var(--sub); margin-bottom: 12px; }
+  .buttons { display: flex; gap: 8px; }
+  .buttons button {
+    flex: 1;
+    padding: 14px 0;
+    font-size: 16px;
+    font-weight: bold;
+    border-radius: 8px;
+    border: 2px solid currentColor;
+    background: #fff;
+  }
+  .buttons button[data-answer="attend"] { color: var(--attend); }
+  .buttons button[data-answer="absent"] { color: var(--absent); }
+  .buttons button[data-answer="undecided"] { color: var(--undecided); }
+  .buttons button.selected { color: #fff; }
+  .buttons button.selected[data-answer="attend"] { background: var(--attend); border-color: var(--attend); }
+  .buttons button.selected[data-answer="absent"] { background: var(--absent); border-color: var(--absent); }
+  .buttons button.selected[data-answer="undecided"] { background: var(--undecided); border-color: var(--undecided); }
+  .buttons button:disabled:not(.selected) { opacity: .4; }
+  .group { margin-top: 12px; }
+  .group:first-of-type { margin-top: 0; }
+  .group h3 { margin: 0 0 4px; font-size: 15px; padding: 4px 8px; border-radius: 4px; background: #EEF2FF; }
+  .group ul { margin: 0; padding-left: 24px; }
+  .group li { padding: 3px 0; }
+  .group .none { color: var(--sub); list-style: none; margin-left: -24px; padding-left: 8px; }
+  .you { font-size: 12px; color: var(--navy); margin-left: 4px; }
+  .message { text-align: center; color: var(--sub); padding: 32px 16px; }
+  .error { color: var(--absent); }
+  .hidden { display: none; }
+  .modal-bg {
+    position: fixed; inset: 0; background: rgba(0,0,0,.4);
+    display: flex; align-items: center; justify-content: center; padding: 16px;
+  }
+  .modal { background: #fff; border-radius: 12px; padding: 20px; width: 100%; max-width: 360px; }
+  .modal p { margin: 0 0 16px; font-size: 16px; line-height: 1.6; }
+  .modal .actions { display: flex; gap: 8px; }
+  .modal .actions button { flex: 1; padding: 12px 0; font-size: 15px; border-radius: 8px; border: none; }
+  .modal .cancel { background: #E5E7EB; }
+  .modal .ok { background: var(--navy); color: #fff; font-weight: bold; }
+</style>
+</head>
+<body>
+<header>
+  <div class="label">予定</div>
+  <h1 id="title">読み込み中…</h1>
+  <div class="row" id="dateRow"><span>日時</span><b id="date"></b></div>
+  <div class="row" id="placeRow"><span>場所</span><b id="place"></b></div>
+</header>
+
+<main>
+  <div id="status" class="message">読み込み中…</div>
+
+  <div id="content" class="hidden">
+    <section class="card">
+      <h2>あなたの回答</h2>
+      <div class="me" id="meText"></div>
+      <div class="buttons">
+        <button data-answer="attend">出席</button>
+        <button data-answer="absent">欠席</button>
+        <button data-answer="undecided">未定</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>みんなの回答</h2>
+      <div id="list"></div>
+    </section>
+  </div>
+</main>
+
+<div id="modal" class="modal-bg hidden">
+  <div class="modal">
+    <p id="modalText"></p>
+    <div class="actions">
+      <button class="cancel" id="modalCancel">やめる</button>
+      <button class="ok" id="modalOk">変更する</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<script>
+  // ===== 設定（LIFF アプリを作ったら書き換える） =====
+  const LIFF_ID = 'ここに LIFF ID を書く';
+  const API_URL = 'https://script.google.com/macros/s/AKfycbz9MuQdWYzxQ7kw8vtCemNa66Hiv7-3hAN-eAav1r1bqVgF4ZDika7gH9lOqqyWUfgl/exec';
+  // ====================================================
+
+  const LABELS = { attend: '出席', absent: '欠席', undecided: '未定' };
+
+  let eventId = '';
+  let myAnswer = null;
+  let busy = false;
+
+  const $ = (id) => document.getElementById(id);
+  const buttons = document.querySelectorAll('.buttons button');
+
+  main();
+
+  async function main() {
+    try {
+      await liff.init({ liffId: LIFF_ID });
+      if (!liff.isLoggedIn()) {
+        liff.login({ redirectUri: location.href });
+        return;
+      }
+
+      const params = new URLSearchParams(location.search);
+      eventId = params.get('event') || '';
+      showEventInfo(params);
+      if (!eventId) throw new Error('予定が指定されていません。予定通知のリンクから開いてください');
+
+      render(await callApi({ action: 'get' }));
+    } catch (err) {
+      showError(err.message);
+    }
+  }
+
+  /** URL に入っている予定の情報を見出しに表示する */
+  function showEventInfo(params) {
+    $('title').textContent = params.get('title') || '出欠回答';
+    const date = params.get('date');
+    const place = params.get('place');
+    $('date').textContent = date || '';
+    $('place').textContent = place || '';
+    $('dateRow').classList.toggle('hidden', !date);
+    $('placeRow').classList.toggle('hidden', !place);
+    document.title = (params.get('title') || '出欠') + ' の出欠';
+  }
+
+  /** GAS に問い合わせる（本人確認用の ID トークンを付ける） */
+  async function callApi(body) {
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      // text/plain で送ると、ブラウザの事前確認（CORS の preflight）が起きず GAS に届く
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(Object.assign({ idToken: liff.getIDToken(), event: eventId }, body)),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'エラーが起きました');
+    return data;
+  }
+
+  /** 自分の回答とみんなの回答を表示する */
+  function render(data) {
+    myAnswer = data.me.answer;
+    $('meText').textContent = myAnswer
+      ? data.me.name + ' さんは「' + LABELS[myAnswer] + '」で回答済みです'
+      : data.me.name + ' さん、出欠を選んでください';
+
+    buttons.forEach((btn) => {
+      const selected = btn.dataset.answer === myAnswer;
+      btn.classList.toggle('selected', selected);
+      btn.disabled = selected;
+    });
+
+    const list = $('list');
+    list.textContent = '';
+    Object.keys(LABELS).forEach((key) => {
+      const people = data.answers[key] || [];
+      const group = document.createElement('div');
+      group.className = 'group';
+      const h3 = document.createElement('h3');
+      h3.textContent = LABELS[key] + '（' + people.length + '人）';
+      const ul = document.createElement('ul');
+      if (people.length === 0) {
+        const li = document.createElement('li');
+        li.className = 'none';
+        li.textContent = 'なし';
+        ul.appendChild(li);
+      }
+      people.forEach((p) => {
+        const li = document.createElement('li');
+        li.textContent = p.name;
+        if (p.isMe) {
+          const you = document.createElement('span');
+          you.className = 'you';
+          you.textContent = '（あなた）';
+          li.appendChild(you);
+        }
+        ul.appendChild(li);
+      });
+      group.append(h3, ul);
+      list.appendChild(group);
+    });
+
+    $('status').classList.add('hidden');
+    $('content').classList.remove('hidden');
+  }
+
+  buttons.forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const answer = btn.dataset.answer;
+      if (busy || answer === myAnswer) return;
+      if (myAnswer && !(await confirmChange(myAnswer, answer))) return;
+      await sendAnswer(answer);
+    });
+  });
+
+  /** 回答を送る。送っている間はボタンを押せなくする */
+  async function sendAnswer(answer) {
+    busy = true;
+    buttons.forEach((b) => { b.disabled = true; });
+    try {
+      render(await callApi({ action: 'answer', answer: answer }));
+    } catch (err) {
+      alert(err.message);
+      buttons.forEach((b) => { b.disabled = b.dataset.answer === myAnswer; });
+    } finally {
+      busy = false;
+    }
+  }
+
+  /** 回答を変えるときの確認画面。「変更する」なら true を返す */
+  function confirmChange(from, to) {
+    return new Promise((resolve) => {
+      $('modalText').textContent = '「' + LABELS[from] + '」から「' + LABELS[to] + '」に変更しますか？';
+      $('modal').classList.remove('hidden');
+      const close = (result) => {
+        $('modal').classList.add('hidden');
+        $('modalOk').onclick = null;
+        $('modalCancel').onclick = null;
+        resolve(result);
+      };
+      $('modalOk').onclick = () => close(true);
+      $('modalCancel').onclick = () => close(false);
+    });
+  }
+
+  function showError(message) {
+    $('content').classList.add('hidden');
+    const status = $('status');
+    status.classList.remove('hidden');
+    status.classList.add('error');
+    status.textContent = message;
+  }
+</script>
+</body>
+</html>
